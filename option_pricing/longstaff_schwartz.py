@@ -22,7 +22,7 @@ class LongstaffSchwartzPricer(MonteCarloEngine):
     """
     
     def __init__(self, n_simulations: int = 100000, n_time_steps: int = 50,
-                 polynomial_degree: int = 4, random_seed: Optional[int] = None):
+                 polynomial_degree: int = 3, random_seed: Optional[int] = None):
         """
         Initialize Longstaff-Schwartz pricer.
         
@@ -110,7 +110,8 @@ class LongstaffSchwartzPricer(MonteCarloEngine):
         
         # Calculate option values
         total_cash_flows = np.sum(cash_flows, axis=1)
-        option_values = total_cash_flows * self.discount_factor(r, dt)
+        discount_to_present = np.exp(-r * dt)  # Single time step discount
+        option_values = total_cash_flows * discount_to_present
         
         # Calculate price and standard error
         option_price = np.mean(option_values)

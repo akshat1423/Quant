@@ -63,37 +63,31 @@ class StochasticMeshPricer(MonteCarloEngine):
             current_prices = paths[:, t]
             intrinsic_values = self.european_payoff(current_prices, K, 'put')
             
-            # Only consider in-the-money options for continuation value
+            # Discount previous option values
+            discounted_future_values = option_values * np.exp(-r * dt)
+            
+            # Only consider in-the-money options for continuation value estimation
             itm_mask = intrinsic_values > 0
             
-            if np.sum(itm_mask) == 0:
-                # No options are in-the-money, continue with intrinsic values
+            if np.sum(itm_mask) > 10:  # Need sufficient points for regression
+                # Estimate continuation values using regression
+                continuation_values = np.zeros_like(intrinsic_values)
+                continuation_values[itm_mask] = self._estimate_continuation_value(
+                    current_prices[itm_mask], 
+                    discounted_future_values[itm_mask], 
+                    r, dt
+                )
+                continuation_values[~itm_mask] = discounted_future_values[~itm_mask]
+                
+                # American option: max of intrinsic and continuation
+                option_values = np.maximum(intrinsic_values, continuation_values)
+            else:
+                # Not enough ITM options, use intrinsic value
                 option_values = intrinsic_values
-                continue
-            
-            # Estimate continuation values using regression
-            continuation_values = self._estimate_continuation_value(
-                current_prices[itm_mask], 
-                option_values[itm_mask], 
-                r, dt
-            )
-            
-            # Update option values with optimal exercise decision
-            temp_values = np.copy(option_values)
-            temp_values[itm_mask] = np.maximum(
-                intrinsic_values[itm_mask], 
-                continuation_values
-            )
-            temp_values[~itm_mask] = intrinsic_values[~itm_mask]
-            
-            option_values = temp_values
-        
-        # Discount back to present value
-        discounted_values = option_values * self.discount_factor(r, dt)
         
         # Calculate price and standard error
-        option_price = np.mean(discounted_values)
-        standard_error = np.std(discounted_values) / np.sqrt(self.n_simulations)
+        option_price = np.mean(option_values)
+        standard_error = np.std(option_values) / np.sqrt(self.n_simulations)
         
         logger.info(f"American put price: {option_price:.4f} ± {standard_error:.4f}")
         
@@ -107,28 +101,29 @@ class StochasticMeshPricer(MonteCarloEngine):
         
         Args:
             stock_prices: Current stock prices
-            future_values: Future option values
+            future_values: Future option values (already discounted)
             r: Risk-free rate
             dt: Time step
             
         Returns:
             Estimated continuation values
         """
-        # Discount future values to current time
-        discounted_values = future_values * self.discount_factor(r, dt)
-        
-        # Create basis functions (Laguerre polynomials)
+        # Create basis functions
         basis_functions = self._create_basis_functions(stock_prices)
         
         # Regression to estimate continuation value
         try:
             # Use least squares regression
-            coefficients = np.linalg.lstsq(basis_functions, discounted_values, rcond=None)[0]
+            coefficients = np.linalg.lstsq(basis_functions, future_values, rcond=None)[0]
             continuation_values = basis_functions @ coefficients
+            
+            # Ensure non-negative continuation values
+            continuation_values = np.maximum(continuation_values, 0)
+            
         except np.linalg.LinAlgError:
             # Fallback to average if regression fails
             logger.warning("Regression failed, using average continuation value")
-            continuation_values = np.full_like(stock_prices, np.mean(discounted_values))
+            continuation_values = np.full_like(stock_prices, np.mean(future_values))
         
         return continuation_values
     
@@ -145,7 +140,7 @@ class StochasticMeshPricer(MonteCarloEngine):
             Matrix of basis function values
         """
         n_paths = len(stock_prices)
-        n_basis = 5  # Number of basis functions
+        n_basis = 3  # Reduced number of basis functions for stability
         
         # Normalize stock prices
         S_normalized = stock_prices / np.mean(stock_prices)
@@ -158,8 +153,6 @@ class StochasticMeshPricer(MonteCarloEngine):
         basis[:, 0] = weights  # L0
         basis[:, 1] = weights * (1 - S_normalized)  # L1
         basis[:, 2] = weights * (1 - 2*S_normalized + S_normalized**2/2)  # L2
-        basis[:, 3] = weights * (1 - 3*S_normalized + 3*S_normalized**2/2 - S_normalized**3/6)  # L3
-        basis[:, 4] = weights * (1 - 4*S_normalized + 3*S_normalized**2 - 2*S_normalized**3/3 + S_normalized**4/24)  # L4
         
         return basis
     

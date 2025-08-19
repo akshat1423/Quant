@@ -16,6 +16,9 @@ gym>=0.21.0
 quantlib-python>=1.26
 QuantLib>=1.26
 
+# Data sources
+yfinance>=0.1.70
+
 # Data visualization
 matplotlib>=3.5.0
 seaborn>=0.11.0
